@@ -2,13 +2,15 @@ import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
+from langchain.embeddings import HuggingFaceInstructEmbeddings
 from langchain.vectorstores import FAISS
 from langchain.chat_models import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
-from jinja2 import Template  # replace htmlTemplates with jinja2
+from jinja2 import Template
 from langchain.llms import HuggingFaceHub
+import sqlite3
+from sqlite3 import Error
 
 def extract_pdf_text(pdf_docs):
     text = ""
@@ -34,7 +36,7 @@ def create_vectorstore(text_chunks):
     return vectorstore
 
 def create_conversation_chain(vectorstore):
-    llm = HuggingFaceHub(repo_id="google/flan-t5-xxl", model_kwargs={"temperature":0.5, "max_length":512})
+    llm = HuggingFaceHub(repo_id="google/flan-t5-xxl", model_kwargs={"temperature": 0.5, "max_length": 512})
     memory = ConversationBufferMemory(
         memory_key='chat_history', return_messages=True)
     conversation_chain = ConversationalRetrievalChain.from_llm(
@@ -44,17 +46,58 @@ def create_conversation_chain(vectorstore):
     )
     return conversation_chain
 
+def create_connection():
+    connection = None
+    try:
+        connection = sqlite3.connect("conversation_history.db")
+        print("Connection to SQLite DB successful")
+    except Error as e:
+        print(f"Error: {e}")
+    return connection
+
+def create_table(connection):
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS conversation_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_message TEXT,
+        bot_message TEXT
+    );
+    """
+    try:
+        cursor = connection.cursor()
+        cursor.execute(create_table_query)
+        print("Table created successfully")
+    except Error as e:
+        print(f"Error: {e}")
+
+def insert_message(connection, user_message, bot_message):
+    insert_query = "INSERT INTO conversation_history (user_message, bot_message) VALUES (?, ?);"
+    try:
+        cursor = connection.cursor()
+        cursor.execute(insert_query, (user_message, bot_message))
+        connection.commit()
+        print("Message inserted successfully")
+    except Error as e:
+        print(f"Error: {e}")
+
 def process_user_input(user_question):
     response = st.session_state.conversation({'question': user_question})
     st.session_state.chat_history = response['chat_history']
+
+    connection = create_connection()
+    create_table(connection)
 
     for i, message in enumerate(st.session_state.chat_history):
         if i % 2 == 0:
             template = Template("<div class='user'>{{MSG}}</div>")
             st.write(template.render(MSG=message.content), unsafe_allow_html=True)
+            insert_message(connection, user_message=message.content, bot_message=None)
         else:
             template = Template("<div class='bot'>{{MSG}}</div>")
             st.write(template.render(MSG=message.content), unsafe_allow_html=True)
+            insert_message(connection, user_message=None, bot_message=message.content)
+
+    connection.close()
 
 def main():
     load_dotenv()
@@ -82,5 +125,4 @@ def main():
                 st.session_state.conversation = create_conversation_chain(vectorstore)
 
 if __name__ == '__main__':
-    main
-    
+    main()
